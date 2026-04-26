@@ -25,6 +25,7 @@ export default function AdminDashboard() {
   const [editingItem, setEditingItem] = useState<any>(null);
   const [newItem, setNewItem] = useState({ chapter: "", section: "", title: "", reward: 0 });
   const [isSaving, setIsSaving] = useState(false);
+  const [expandedStudentId, setExpandedStudentId] = useState<string | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -38,13 +39,10 @@ export default function AdminDashboard() {
     const unsubDocs = onSnapshot(q, (snapshot) => {
       const sData = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       setStudents(sData);
-
-      // 管理者を除き、開始日が未設定の受講生を承認待ちとして検出
       const unassigned = sData.find(
         (s: any) => !s.startDate && !s.email?.includes("admin")
       );
       setPendingStudent(unassigned ?? null);
-
       setLoading(false);
     });
 
@@ -53,13 +51,40 @@ export default function AdminDashboard() {
       setCurricula(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
     });
 
-    return () => {
-      unsubAuth();
-      unsubDocs();
-      unsubCurricula();
-    };
+    return () => { unsubAuth(); unsubDocs(); unsubCurricula(); };
   }, [router]);
 
+  // ---- ヘルパー ----
+  const nonAdminStudents = students.filter((s: any) => !s.email?.includes("admin"));
+
+  // progress は完了レッスンIDの配列なので割合に変換
+  const getProgressPct = (student: any) =>
+    curricula.length > 0
+      ? Math.round(((student.progress?.length || 0) / curricula.length) * 100)
+      : 0;
+
+  // ---- 統計値（実データ） ----
+  const totalEarned = nonAdminStudents.reduce((sum, s) => sum + (s.earnedAmount || 0), 0);
+  const avgProgress =
+    nonAdminStudents.length > 0
+      ? Math.round(
+          nonAdminStudents.reduce((sum, s) => sum + getProgressPct(s), 0) /
+            nonAdminStudents.length
+        )
+      : 0;
+  const today = new Date();
+  const activeStudents = nonAdminStudents.filter((s) => s.startDate && s.endDate);
+  const overdueStudents = activeStudents.filter((s) => {
+    const end = new Date(s.endDate);
+    return today > end && (s.progress?.length || 0) < curricula.length;
+  });
+  const overdueRate =
+    activeStudents.length > 0
+      ? Math.round((overdueStudents.length / activeStudents.length) * 100)
+      : 0;
+  const completionRate = 100 - overdueRate;
+
+  // ---- ハンドラー ----
   const handleLogout = async () => {
     await signOut(auth);
     router.push("/login");
@@ -69,13 +94,27 @@ export default function AdminDashboard() {
     const startDate = new Date();
     const endDate = new Date();
     endDate.setDate(startDate.getDate() + days);
-
     await updateDoc(doc(db, "users", studentId), {
       startDate: startDate.toISOString().split("T")[0],
       endDate: endDate.toISOString().split("T")[0],
       status: "active",
     });
     setPendingStudent(null);
+  };
+
+  // 開始日変更時：受講期間（日数）を維持したまま終了日も再計算
+  const handleStartDateChange = async (student: any, newStartDate: string) => {
+    const updates: Record<string, string> = { startDate: newStartDate };
+    if (student.startDate && student.endDate) {
+      const durationDays = Math.round(
+        (new Date(student.endDate).getTime() - new Date(student.startDate).getTime()) /
+          (1000 * 60 * 60 * 24)
+      );
+      const newEnd = new Date(newStartDate);
+      newEnd.setDate(newEnd.getDate() + durationDays);
+      updates.endDate = newEnd.toISOString().split("T")[0];
+    }
+    await updateDoc(doc(db, "users", student.id), updates);
   };
 
   const handleAddItem = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -115,6 +154,15 @@ export default function AdminDashboard() {
     await deleteDoc(doc(db, "curriculums", id));
   };
 
+  // カリキュラムツリー（構成管理プレビュー用）
+  const curriculumTree: Record<string, Record<string, any[]>> = {};
+  curricula.forEach((item) => {
+    if (!curriculumTree[item.chapter]) curriculumTree[item.chapter] = {};
+    if (!curriculumTree[item.chapter][item.section])
+      curriculumTree[item.chapter][item.section] = [];
+    curriculumTree[item.chapter][item.section].push(item);
+  });
+
   if (loading)
     return (
       <div className="flex justify-center items-center h-screen">読み込み中...</div>
@@ -133,50 +181,35 @@ export default function AdminDashboard() {
           </div>
 
           <nav className="flex bg-gray-100 p-1 rounded-xl">
-            <button
-              type="button"
-              onClick={() => setView("total")}
-              className={`px-4 py-1.5 rounded-lg text-sm font-bold transition ${view === "total" ? "bg-white shadow-sm text-orange-600" : "text-gray-500"}`}
-            >
+            <button type="button" onClick={() => setView("total")}
+              className={`px-4 py-1.5 rounded-lg text-sm font-bold transition ${view === "total" ? "bg-white shadow-sm text-orange-600" : "text-gray-500"}`}>
               全体統計
             </button>
-            <button
-              type="button"
-              onClick={() => setView("detail")}
-              className={`px-4 py-1.5 rounded-lg text-sm font-bold transition ${view === "detail" ? "bg-white shadow-sm text-orange-600" : "text-gray-500"}`}
-            >
+            <button type="button" onClick={() => setView("detail")}
+              className={`px-4 py-1.5 rounded-lg text-sm font-bold transition ${view === "detail" ? "bg-white shadow-sm text-orange-600" : "text-gray-500"}`}>
               受講生詳細
             </button>
-            <button
-              type="button"
-              onClick={() => setView("curriculum")}
-              className={`px-4 py-1.5 rounded-lg text-sm font-bold transition ${view === "curriculum" ? "bg-white shadow-sm text-orange-600" : "text-gray-500"}`}
-            >
+            <button type="button" onClick={() => setView("curriculum")}
+              className={`px-4 py-1.5 rounded-lg text-sm font-bold transition ${view === "curriculum" ? "bg-white shadow-sm text-orange-600" : "text-gray-500"}`}>
               カリキュラム登録
             </button>
-            <button
-              type="button"
-              onClick={() => setView("config")}
-              className={`px-4 py-1.5 rounded-lg text-sm font-bold transition ${view === "config" ? "bg-white shadow-sm text-orange-600" : "text-gray-500"}`}
-            >
+            <button type="button" onClick={() => setView("config")}
+              className={`px-4 py-1.5 rounded-lg text-sm font-bold transition ${view === "config" ? "bg-white shadow-sm text-orange-600" : "text-gray-500"}`}>
               構成管理
             </button>
           </nav>
 
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="text-gray-500 text-sm font-bold hover:text-red-500 transition"
-          >
+          <button type="button" onClick={handleLogout}
+            className="text-gray-500 text-sm font-bold hover:text-red-500 transition">
             ログアウト
           </button>
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-4 pt-8">
-        {/* 承認待ちアラート（管理者以外で startDate 未設定の場合のみ表示） */}
+        {/* 承認待ちアラート */}
         {pendingStudent && (
-          <div className="mb-8 bg-orange-50 border-2 border-orange-200 p-6 rounded-3xl flex flex-col md:flex-row items-center justify-between gap-4 animate-pulse">
+          <div className="mb-8 bg-orange-50 border-2 border-orange-200 p-6 rounded-3xl flex flex-col md:flex-row items-center justify-between gap-4">
             <div>
               <p className="text-orange-800 font-bold text-lg">新着の受講生がいます！</p>
               <p className="text-orange-600 text-sm">
@@ -184,42 +217,38 @@ export default function AdminDashboard() {
               </p>
             </div>
             <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => handleApprove(pendingStudent.id, 90)}
-                className="bg-orange-500 text-white px-6 py-2 rounded-2xl font-bold shadow-lg hover:bg-orange-600"
-              >
+              <button type="button" onClick={() => handleApprove(pendingStudent.id, 90)}
+                className="bg-orange-500 text-white px-6 py-2 rounded-2xl font-bold shadow-lg hover:bg-orange-600">
                 90日間で承認
               </button>
-              <button
-                type="button"
-                onClick={() => handleApprove(pendingStudent.id, 180)}
-                className="bg-white text-orange-500 border-2 border-orange-500 px-6 py-2 rounded-2xl font-bold hover:bg-orange-50"
-              >
+              <button type="button" onClick={() => handleApprove(pendingStudent.id, 180)}
+                className="bg-white text-orange-500 border-2 border-orange-500 px-6 py-2 rounded-2xl font-bold hover:bg-orange-50">
                 180日間で承認
               </button>
             </div>
           </div>
         )}
 
+        {/* ===== 全体統計 ===== */}
         {view === "total" && (
           <div className="space-y-8">
+            {/* 統計カード（実データで計算） */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
                 <p className="text-gray-400 text-xs font-bold mb-1">総報酬発生額</p>
-                <p className="text-2xl font-black text-orange-600">¥127,500</p>
+                <p className="text-2xl font-black text-orange-600">¥{totalEarned.toLocaleString()}</p>
               </div>
               <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
                 <p className="text-gray-400 text-xs font-bold mb-1">スクール平均進捗</p>
-                <p className="text-2xl font-black text-blue-600">84%</p>
+                <p className="text-2xl font-black text-blue-600">{avgProgress}%</p>
               </div>
               <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
                 <p className="text-gray-400 text-xs font-bold mb-1">期間内完走率</p>
-                <p className="text-2xl font-black text-green-500">100%</p>
+                <p className="text-2xl font-black text-green-500">{completionRate}%</p>
               </div>
               <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
                 <p className="text-gray-400 text-xs font-bold mb-1">期限超過率</p>
-                <p className="text-2xl font-black text-red-500">0%</p>
+                <p className="text-2xl font-black text-red-500">{overdueRate}%</p>
               </div>
             </div>
 
@@ -230,98 +259,218 @@ export default function AdminDashboard() {
               </div>
 
               <div className="space-y-6">
-                {students
-                  .filter((s: any) => !s.email?.includes("admin"))
-                  .map((student) => {
-                    const today = new Date();
-                    const end = student.endDate ? new Date(student.endDate) : null;
-                    const diffTime = end ? end.getTime() - today.getTime() : 0;
-                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                    const isExpired = diffDays < 0;
+                {nonAdminStudents.map((student) => {
+                  const end = student.endDate ? new Date(student.endDate) : null;
+                  const diffDays = end
+                    ? Math.ceil((end.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+                    : null;
+                  const isExpired = diffDays !== null && diffDays < 0;
+                  const progressPct = getProgressPct(student);
 
-                    return (
-                      <div
-                        key={student.id}
-                        className="flex flex-col md:flex-row items-start md:items-center justify-between p-4 hover:bg-gray-50 rounded-2xl transition group border-b border-gray-50 last:border-0"
-                      >
-                        <div className="flex-1 min-w-0 mb-4 md:mb-0">
-                          <p className="font-bold text-gray-800 truncate text-lg">
-                            {student.name || "名前未設定"}
-                          </p>
-                          <p className="text-xs text-gray-400 font-medium">{student.email}</p>
+                  return (
+                    <div key={student.id}
+                      className="flex flex-col md:flex-row items-start md:items-center justify-between p-4 hover:bg-gray-50 rounded-2xl transition border-b border-gray-50 last:border-0">
+                      <div className="flex-1 min-w-0 mb-4 md:mb-0">
+                        <p className="font-bold text-gray-800 truncate text-lg">
+                          {student.name || "名前未設定"}
+                        </p>
+                        <p className="text-xs text-gray-400 font-medium">{student.email}</p>
+                      </div>
+
+                      <div className="flex-1 w-full md:max-w-xs px-0 md:px-8 mb-4 md:mb-0">
+                        <div className="flex justify-between text-[10px] font-bold text-gray-400 mb-1">
+                          <span>進捗 ({student.progress?.length || 0}/{curricula.length})</span>
+                          <span className="text-blue-600">{progressPct}%</span>
                         </div>
-
-                        <div className="flex-1 w-full md:max-w-xs px-0 md:px-8 mb-4 md:mb-0">
-                          <div className="flex justify-between text-[10px] font-bold text-gray-400 mb-1">
-                            <span>現在の進捗</span>
-                            <span className="text-blue-600">{student.progress || 0}%</span>
-                          </div>
-                          <div className="w-full bg-gray-100 h-2.5 rounded-full overflow-hidden">
-                            <div
-                              className="bg-blue-500 h-full transition-all duration-1000"
-                              style={{ width: `${student.progress || 0}%` }}
-                            ></div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-6 w-full md:w-auto justify-between md:justify-end">
-                          <div className="text-center">
-                            <p className="text-[10px] font-bold text-gray-400 mb-0.5">受講開始日</p>
-                            <input
-                              type="date"
-                              title="受講開始日"
-                              defaultValue={student.startDate}
-                              className="text-xs font-bold text-gray-600 bg-gray-50 px-2 py-1 rounded-lg outline-none"
-                              onChange={async (e) => {
-                                await updateDoc(doc(db, "users", student.id), {
-                                  startDate: e.target.value,
-                                });
-                              }}
-                            />
-                          </div>
-
-                          <div
-                            className={`px-4 py-2 rounded-2xl text-center min-w-[100px] ${isExpired ? "bg-red-50" : "bg-green-50"}`}
-                          >
-                            <p className="text-[10px] font-bold text-gray-400 mb-0.5">目標まで</p>
-                            <p
-                              className={`text-sm font-black ${isExpired ? "text-red-500" : "text-green-500"}`}
-                            >
-                              {isExpired ? "期限超過" : `あと ${diffDays}日`}
-                            </p>
-                          </div>
+                        <div className="w-full bg-gray-100 h-2.5 rounded-full overflow-hidden">
+                          <div className="bg-blue-500 h-full transition-all duration-700"
+                            style={{ width: `${progressPct}%` }}></div>
                         </div>
                       </div>
-                    );
-                  })}
+
+                      <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-end">
+                        <div className="text-center">
+                          <p className="text-[10px] font-bold text-gray-400 mb-0.5">受講開始日</p>
+                          <input
+                            type="date"
+                            title="受講開始日"
+                            defaultValue={student.startDate}
+                            key={student.startDate}
+                            className="text-xs font-bold text-gray-600 bg-gray-50 px-2 py-1 rounded-lg outline-none cursor-pointer"
+                            onChange={(e) => handleStartDateChange(student, e.target.value)}
+                          />
+                        </div>
+
+                        <div className={`px-4 py-2 rounded-2xl text-center min-w-[100px] ${
+                          diffDays === null ? "bg-gray-50" : isExpired ? "bg-red-50" : "bg-green-50"
+                        }`}>
+                          <p className="text-[10px] font-bold text-gray-400 mb-0.5">目標まで</p>
+                          <p className={`text-sm font-black ${
+                            diffDays === null ? "text-gray-400" : isExpired ? "text-red-500" : "text-green-500"
+                          }`}>
+                            {diffDays === null ? "未設定" : isExpired ? "期限超過" : `あと ${diffDays}日`}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </section>
           </div>
         )}
 
+        {/* ===== 受講生詳細（アコーディオン） ===== */}
         {view === "detail" && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {students
-              .filter((s: any) => !s.email?.includes("admin"))
-              .map((s) => (
-                <div key={s.id} className="bg-white p-6 rounded-3xl border shadow-sm">
-                  <p className="font-bold">{s.name || "名前未設定"}</p>
-                  <p className="text-sm text-gray-400 mb-4">{s.email}</p>
+          <div className="space-y-3">
+            {nonAdminStudents.length === 0 && (
+              <div className="bg-white p-10 rounded-[40px] text-center border border-gray-100">
+                <p className="text-gray-400 font-bold">受講生がいません</p>
+              </div>
+            )}
+            {nonAdminStudents.map((s) => {
+              const isOpen = expandedStudentId === s.id;
+              const progressPct = getProgressPct(s);
+              const completedLessons = curricula.filter((l) =>
+                (s.progress as string[] | undefined)?.includes(l.id)
+              );
+              const comments = s.comments as
+                | Record<string, { text: string; date: string; read: boolean }>
+                | undefined;
+              const commentEntries = comments
+                ? Object.entries(comments).filter(([, c]) => c.text)
+                : [];
+              const unreadCount = commentEntries.filter(([, c]) => !c.read).length;
+
+              return (
+                <div key={s.id}
+                  className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
+                  {/* アコーディオンヘッダー */}
                   <button
                     type="button"
-                    onClick={() => router.push(`/admin/student/${s.id}`)}
-                    className="w-full bg-gray-800 text-white py-2 rounded-xl text-sm font-bold hover:bg-black transition"
-                  >
-                    詳細レポートを表示
+                    onClick={() => setExpandedStudentId(isOpen ? null : s.id)}
+                    className="w-full flex items-center justify-between px-6 py-5 hover:bg-gray-50 transition text-left">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center font-black text-orange-500 shrink-0">
+                        {(s.name || "?").charAt(0)}
+                      </div>
+                      <div>
+                        <p className="font-bold text-gray-800">{s.name || "名前未設定"}</p>
+                        <p className="text-xs text-gray-400">{s.email}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      {unreadCount > 0 && (
+                        <span className="bg-red-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full">
+                          未読 {unreadCount}
+                        </span>
+                      )}
+                      <div className="text-right">
+                        <p className="text-[10px] text-gray-400">進捗</p>
+                        <p className="font-black text-blue-600 text-sm">{progressPct}%</p>
+                      </div>
+                      <span className={`text-gray-300 font-bold text-lg transition-transform duration-200 ${isOpen ? "-rotate-180" : ""}`}>
+                        ▾
+                      </span>
+                    </div>
                   </button>
+
+                  {/* アコーディオン本体 */}
+                  {isOpen && (
+                    <div className="border-t border-gray-100 p-6 space-y-5 bg-gray-50/60">
+                      {/* サマリー */}
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div className="bg-white p-4 rounded-2xl">
+                          <p className="text-[10px] font-bold text-gray-400 mb-1">獲得金額</p>
+                          <p className="font-black text-orange-500">¥{(s.earnedAmount || 0).toLocaleString()}</p>
+                        </div>
+                        <div className="bg-white p-4 rounded-2xl">
+                          <p className="text-[10px] font-bold text-gray-400 mb-1">完了レッスン</p>
+                          <p className="font-black text-gray-800">{completedLessons.length} / {curricula.length}</p>
+                        </div>
+                        <div className="bg-white p-4 rounded-2xl">
+                          <p className="text-[10px] font-bold text-gray-400 mb-1">連続ログイン</p>
+                          <p className="font-black text-gray-800">{s.loginStreak || 0} 日</p>
+                        </div>
+                        <div className="bg-white p-4 rounded-2xl">
+                          <p className="text-[10px] font-bold text-gray-400 mb-1">受講期間</p>
+                          <p className="font-bold text-gray-600 text-[11px] leading-relaxed">
+                            {s.startDate || "未設定"}<br />〜 {s.endDate || "未設定"}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* 進捗バー */}
+                      <div className="bg-white p-4 rounded-2xl">
+                        <div className="flex justify-between text-xs font-bold text-gray-400 mb-2">
+                          <span>学習進捗</span>
+                          <span className="text-blue-600">{progressPct}%</span>
+                        </div>
+                        <div className="w-full bg-gray-100 h-3 rounded-full overflow-hidden">
+                          <div className="bg-blue-500 h-full rounded-full transition-all duration-700"
+                            style={{ width: `${progressPct}%` }}></div>
+                        </div>
+                      </div>
+
+                      {/* コメント */}
+                      {commentEntries.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">
+                            進捗報告・質問（{commentEntries.length}件）
+                          </p>
+                          <div className="space-y-2">
+                            {commentEntries
+                              .sort((a, b) => new Date(b[1].date).getTime() - new Date(a[1].date).getTime())
+                              .slice(0, 5)
+                              .map(([lessonId, c]) => {
+                                const lesson = curricula.find((l) => l.id === lessonId);
+                                return (
+                                  <div key={lessonId}
+                                    className={`p-4 rounded-2xl ${c.read ? "bg-gray-50" : "bg-blue-50 border border-blue-100"}`}>
+                                    <p className="text-xs font-bold text-orange-500 mb-1">
+                                      {lesson?.title || lessonId}
+                                    </p>
+                                    <p className="text-sm text-gray-700 leading-relaxed">{c.text}</p>
+                                    <p className="text-[10px] text-gray-400 mt-1">
+                                      {new Date(c.date).toLocaleString("ja-JP")}
+                                    </p>
+                                  </div>
+                                );
+                              })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 完了レッスン */}
+                      {completedLessons.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">
+                            完了レッスン（{completedLessons.length}件）
+                          </p>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            {completedLessons.map((lesson) => (
+                              <div key={lesson.id}
+                                className="flex items-center justify-between bg-green-50 px-4 py-2 rounded-xl">
+                                <p className="text-xs font-bold text-gray-700 truncate">{lesson.title}</p>
+                                <span className="text-xs font-black text-green-600 ml-2 shrink-0">
+                                  ¥{lesson.reward?.toLocaleString()}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              ))}
+              );
+            })}
           </div>
         )}
 
+        {/* ===== カリキュラム登録 ===== */}
         {view === "curriculum" && (
           <div className="space-y-6">
-            {/* 新規追加フォーム */}
             <div className="bg-white p-8 rounded-[40px] shadow-sm border border-gray-100">
               <div className="flex items-center gap-3 mb-6">
                 <div className="w-2 h-6 bg-orange-500 rounded-full"></div>
@@ -350,25 +499,20 @@ export default function AdminDashboard() {
                   required
                 />
                 <input
-                  type="number"
-                  min={0}
+                  type="number" min={0}
                   className="bg-gray-50 px-4 py-3 rounded-2xl outline-none focus:ring-2 focus:ring-orange-200 font-medium text-sm text-gray-800"
                   placeholder="報酬（円）"
                   value={newItem.reward || ""}
                   onChange={(e) => setNewItem({ ...newItem, reward: Number(e.target.value) })}
                   required
                 />
-                <button
-                  type="submit"
-                  disabled={isSaving}
-                  className="md:col-span-2 bg-orange-500 text-white py-3 rounded-2xl font-bold hover:bg-orange-600 disabled:opacity-50 transition"
-                >
+                <button type="submit" disabled={isSaving}
+                  className="md:col-span-2 bg-orange-500 text-white py-3 rounded-2xl font-bold hover:bg-orange-600 disabled:opacity-50 transition">
                   {isSaving ? "保存中..." : "+ レッスンを追加"}
                 </button>
               </form>
             </div>
 
-            {/* 登録済み一覧 */}
             <div className="bg-white p-8 rounded-[40px] shadow-sm border border-gray-100">
               <div className="flex items-center gap-3 mb-6">
                 <div className="w-2 h-6 bg-blue-500 rounded-full"></div>
@@ -378,37 +522,25 @@ export default function AdminDashboard() {
               </div>
               <div className="space-y-3">
                 {curricula.length === 0 && (
-                  <p className="text-gray-400 text-sm text-center py-8">
-                    まだレッスンが登録されていません
-                  </p>
+                  <p className="text-gray-400 text-sm text-center py-8">まだレッスンが登録されていません</p>
                 )}
                 {curricula.map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl"
-                  >
+                  <div key={item.id}
+                    className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl">
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-bold text-orange-500 mb-0.5">
                         {item.chapter} / {item.section}
                       </p>
                       <p className="font-bold text-gray-800">{item.title}</p>
-                      <p className="text-xs text-gray-400 mt-0.5">
-                        報酬: ¥{item.reward?.toLocaleString()}
-                      </p>
+                      <p className="text-xs text-gray-400 mt-0.5">報酬: ¥{item.reward?.toLocaleString()}</p>
                     </div>
                     <div className="flex gap-2 shrink-0 ml-4">
-                      <button
-                        type="button"
-                        onClick={() => setEditingItem({ ...item })}
-                        className="px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-bold hover:bg-gray-100 transition"
-                      >
+                      <button type="button" onClick={() => setEditingItem({ ...item })}
+                        className="px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-bold hover:bg-gray-100 transition">
                         編集
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteItem(item.id)}
-                        className="px-4 py-2 bg-red-50 text-red-500 rounded-xl text-sm font-bold hover:bg-red-100 transition"
-                      >
+                      <button type="button" onClick={() => handleDeleteItem(item.id)}
+                        className="px-4 py-2 bg-red-50 text-red-500 rounded-xl text-sm font-bold hover:bg-red-100 transition">
                         削除
                       </button>
                     </div>
@@ -419,9 +551,96 @@ export default function AdminDashboard() {
           </div>
         )}
 
+        {/* ===== 構成管理（カリキュラムプレビュー） ===== */}
         {view === "config" && (
-          <div className="bg-white p-10 rounded-[40px] text-center border-2 border-dashed border-gray-200">
-            <p className="text-gray-400 font-bold">システム構成管理は準備中です</p>
+          <div className="space-y-6">
+            {/* サマリーカード */}
+            <div className="grid grid-cols-3 gap-4">
+              <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
+                <p className="text-gray-400 text-xs font-bold mb-1">総レッスン数</p>
+                <p className="text-2xl font-black text-gray-800">{curricula.length}件</p>
+              </div>
+              <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
+                <p className="text-gray-400 text-xs font-bold mb-1">チャプター数</p>
+                <p className="text-2xl font-black text-orange-500">
+                  {Object.keys(curriculumTree).length}章
+                </p>
+              </div>
+              <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
+                <p className="text-gray-400 text-xs font-bold mb-1">総報酬額（満点）</p>
+                <p className="text-2xl font-black text-green-500">
+                  ¥{curricula.reduce((sum, l) => sum + (l.reward || 0), 0).toLocaleString()}
+                </p>
+              </div>
+            </div>
+
+            {/* ツリービュー */}
+            {Object.keys(curriculumTree).length === 0 ? (
+              <div className="bg-white p-10 rounded-[40px] text-center border-2 border-dashed border-gray-200">
+                <p className="text-gray-400 font-bold mb-4">カリキュラムが未登録です</p>
+                <button type="button" onClick={() => setView("curriculum")}
+                  className="px-6 py-2 bg-orange-500 text-white rounded-2xl font-bold hover:bg-orange-600 text-sm transition">
+                  カリキュラムを追加する
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {Object.entries(curriculumTree).map(([chapter, sections]) => {
+                  const chapterLessons = Object.values(sections).flat();
+                  const chapterReward = chapterLessons.reduce(
+                    (sum, l: any) => sum + (l.reward || 0), 0
+                  );
+                  return (
+                    <div key={chapter}
+                      className="bg-white rounded-[32px] shadow-sm border border-gray-100 overflow-hidden">
+                      {/* 章ヘッダー */}
+                      <div className="flex items-center justify-between px-6 py-5 bg-orange-50/60">
+                        <div className="flex items-center gap-3">
+                          <div className="w-1.5 h-8 bg-orange-500 rounded-full"></div>
+                          <div>
+                            <h3 className="font-black text-gray-800">{chapter}</h3>
+                            <p className="text-xs text-gray-400">
+                              {Object.keys(sections).length}セクション · {chapterLessons.length}レッスン
+                            </p>
+                          </div>
+                        </div>
+                        <p className="text-sm font-black text-orange-500">
+                          ¥{chapterReward.toLocaleString()}
+                        </p>
+                      </div>
+                      {/* セクション・レッスン */}
+                      <div className="divide-y divide-gray-50">
+                        {Object.entries(sections).map(([section, lessons]) => (
+                          <div key={section} className="px-6 py-4">
+                            <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">
+                              {section}
+                            </p>
+                            <div className="space-y-1">
+                              {(lessons as any[]).map((lesson, i) => (
+                                <div key={lesson.id}
+                                  className="flex items-center justify-between py-2 px-3 rounded-xl hover:bg-gray-50 transition">
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <span className="w-6 h-6 bg-gray-100 rounded-full flex items-center justify-center text-[10px] font-black text-gray-400 shrink-0">
+                                      {i + 1}
+                                    </span>
+                                    <p className="text-sm font-bold text-gray-700 truncate">
+                                      {lesson.title}
+                                    </p>
+                                  </div>
+                                  <span className="text-xs font-black text-green-600 shrink-0 ml-3">
+                                    ¥{lesson.reward?.toLocaleString()}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
       </main>
@@ -454,29 +673,20 @@ export default function AdminDashboard() {
                 required
               />
               <input
-                type="number"
-                min={0}
+                type="number" min={0}
                 className="w-full bg-gray-50 px-4 py-3 rounded-2xl outline-none focus:ring-2 focus:ring-orange-200 font-medium text-sm text-gray-800"
                 placeholder="報酬（円）"
                 value={editingItem.reward || ""}
-                onChange={(e) =>
-                  setEditingItem({ ...editingItem, reward: Number(e.target.value) })
-                }
+                onChange={(e) => setEditingItem({ ...editingItem, reward: Number(e.target.value) })}
                 required
               />
               <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setEditingItem(null)}
-                  className="flex-1 py-3 bg-gray-100 text-gray-600 rounded-2xl font-bold hover:bg-gray-200 transition"
-                >
+                <button type="button" onClick={() => setEditingItem(null)}
+                  className="flex-1 py-3 bg-gray-100 text-gray-600 rounded-2xl font-bold hover:bg-gray-200 transition">
                   キャンセル
                 </button>
-                <button
-                  type="submit"
-                  disabled={isSaving}
-                  className="flex-1 py-3 bg-orange-500 text-white rounded-2xl font-bold hover:bg-orange-600 disabled:opacity-50 transition"
-                >
+                <button type="submit" disabled={isSaving}
+                  className="flex-1 py-3 bg-orange-500 text-white rounded-2xl font-bold hover:bg-orange-600 disabled:opacity-50 transition">
                   {isSaving ? "保存中..." : "保存する"}
                 </button>
               </div>
