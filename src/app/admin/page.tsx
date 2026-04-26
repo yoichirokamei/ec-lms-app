@@ -36,7 +36,6 @@ export default function AdminDashboard() {
   const [curricula, setCurricula] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState("total");
-  const [pendingStudent, setPendingStudent] = useState<any>(null);
 
   // カリキュラム編集
   const [editingItem, setEditingItem] = useState<any>(null);
@@ -63,10 +62,6 @@ export default function AdminDashboard() {
     const unsubDocs = onSnapshot(q, (snapshot) => {
       const sData = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       setStudents(sData);
-      const unassigned = sData.find(
-        (s: any) => !s.startDate && !s.email?.includes("admin")
-      );
-      setPendingStudent(unassigned ?? null);
       setLoading(false);
     });
 
@@ -130,38 +125,14 @@ export default function AdminDashboard() {
   // ---- ハンドラー ----
   const handleLogout = async () => { await signOut(auth); router.push("/login"); };
 
-  const handleApprove = async (studentId: string, days: number) => {
-    const startDate = new Date();
-    const startStr = startDate.toISOString().split("T")[0];
-    const endDate = new Date(startDate);
-    endDate.setDate(startDate.getDate() + days);
-    const { goalDate, supportEndDate } = calcDates(startStr);
-
-    await updateDoc(doc(db, "users", studentId), {
-      startDate: startStr,
-      endDate: endDate.toISOString().split("T")[0],
+  const handleStartDateChange = async (student: any, newStartDate: string) => {
+    const { goalDate, supportEndDate } = calcDates(newStartDate);
+    await updateDoc(doc(db, "users", student.id), {
+      startDate: newStartDate,
       goalDate,
       supportEndDate,
       status: "active",
     });
-    setPendingStudent(null);
-  };
-
-  const handleStartDateChange = async (student: any, newStartDate: string) => {
-    const { goalDate, supportEndDate } = calcDates(newStartDate);
-    const updates: Record<string, string> = { startDate: newStartDate, goalDate, supportEndDate };
-
-    // 承認済みの場合は受講期間（日数）を維持してendDateも再計算
-    if (student.startDate && student.endDate) {
-      const durationDays = Math.round(
-        (new Date(student.endDate).getTime() - new Date(student.startDate).getTime()) /
-          (1000 * 60 * 60 * 24)
-      );
-      const newEnd = new Date(newStartDate);
-      newEnd.setDate(newEnd.getDate() + durationDays);
-      updates.endDate = newEnd.toISOString().split("T")[0];
-    }
-    await updateDoc(doc(db, "users", student.id), updates);
   };
 
   // 受講生を管理者側から追加（サブアプリで auth 状態を汚さず作成）
@@ -278,26 +249,6 @@ export default function AdminDashboard() {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 pt-8">
-        {/* 承認待ちアラート */}
-        {pendingStudent && (
-          <div className="mb-8 bg-orange-50 border-2 border-orange-200 p-6 rounded-3xl flex flex-col md:flex-row items-center justify-between gap-4">
-            <div>
-              <p className="text-orange-800 font-bold text-lg">新着の受講生がいます！</p>
-              <p className="text-orange-600 text-sm">{pendingStudent.email} さんの受講期間を設定してください。</p>
-            </div>
-            <div className="flex gap-2">
-              <button type="button" onClick={() => handleApprove(pendingStudent.id, 90)}
-                className="bg-orange-500 text-white px-6 py-2 rounded-2xl font-bold shadow-lg hover:bg-orange-600">
-                90日間で承認
-              </button>
-              <button type="button" onClick={() => handleApprove(pendingStudent.id, 180)}
-                className="bg-white text-orange-500 border-2 border-orange-500 px-6 py-2 rounded-2xl font-bold hover:bg-orange-50">
-                180日間で承認
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* ===== 全体統計 ===== */}
         {view === "total" && (
           <div className="space-y-8">
@@ -339,7 +290,14 @@ export default function AdminDashboard() {
                     <div key={student.id}
                       className="flex flex-col md:flex-row items-start md:items-start justify-between p-4 hover:bg-gray-50 rounded-2xl transition border-b border-gray-50 last:border-0 gap-4">
                       <div className="flex-1 min-w-0">
-                        <p className="font-bold text-gray-800 text-base">{student.name || "名前未設定"}</p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-bold text-gray-800 text-base">{student.name || "名前未設定"}</p>
+                          {!student.startDate && (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">
+                              受講日未記入
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-gray-400">{student.email}</p>
                       </div>
 
@@ -443,7 +401,14 @@ export default function AdminDashboard() {
                         {(s.name || "?").charAt(0)}
                       </div>
                       <div>
-                        <p className="font-bold text-gray-800">{s.name || "名前未設定"}</p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-bold text-gray-800">{s.name || "名前未設定"}</p>
+                          {!s.startDate && (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">
+                              受講日未記入
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-gray-400">{s.email}</p>
                       </div>
                     </div>
@@ -481,9 +446,9 @@ export default function AdminDashboard() {
                         <div className="bg-white p-4 rounded-2xl">
                           <p className="text-[10px] font-bold text-gray-400 mb-1">ステータス</p>
                           <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-black ${
-                            s.status === "active" ? "bg-green-100 text-green-600" : "bg-orange-100 text-orange-600"
+                            s.startDate ? "bg-green-100 text-green-600" : "bg-yellow-100 text-yellow-700"
                           }`}>
-                            {s.status === "active" ? "受講中" : "承認待ち"}
+                            {s.startDate ? "受講中" : "受講日未記入"}
                           </span>
                         </div>
                       </div>

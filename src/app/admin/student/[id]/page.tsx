@@ -139,12 +139,12 @@ export default function StudentDetailPage({
                 <p className="text-[10px] font-bold text-gray-400 mb-1">ステータス</p>
                 <span
                   className={`inline-block px-3 py-1 rounded-full text-xs font-black ${
-                    student.status === "active"
+                    student.startDate
                       ? "bg-green-100 text-green-600"
-                      : "bg-orange-100 text-orange-600"
+                      : "bg-yellow-100 text-yellow-700"
                   }`}
                 >
-                  {student.status === "active" ? "受講中" : "承認待ち"}
+                  {student.startDate ? "受講中" : "受講日未記入"}
                 </span>
               </div>
               <div>
