@@ -45,6 +45,10 @@ export default function AdminDashboard() {
   // 受講生詳細アコーディオン
   const [expandedStudentId, setExpandedStudentId] = useState<string | null>(null);
 
+  // 構成管理 ドラッグ&ドロップ
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+
   // 受講生追加モーダル
   const [showAddStudent, setShowAddStudent] = useState(false);
   const [newStudent, setNewStudent] = useState({ name: "", email: "", password: "" });
@@ -75,6 +79,13 @@ export default function AdminDashboard() {
 
   // ---- ヘルパー ----
   const nonAdminStudents = students.filter((s: any) => !s.email?.includes("admin"));
+
+  // order フィールドでソート（未設定の場合は配列インデックス順）
+  const sortedCurricula = [...curricula].sort((a, b) => {
+    const ai = a.order !== undefined ? a.order : curricula.findIndex((x) => x.id === a.id);
+    const bi = b.order !== undefined ? b.order : curricula.findIndex((x) => x.id === b.id);
+    return ai - bi;
+  });
 
   // 進捗は 0〜100% にキャップ
   const getProgressPct = (student: any) =>
@@ -179,12 +190,29 @@ export default function AdminDashboard() {
     if (expandedStudentId === studentId) setExpandedStudentId(null);
   };
 
+  // セクション内でドロップされたとき、全体の order を振り直す
+  const handleDropLesson = async (draggedId: string, targetId: string) => {
+    if (draggedId === targetId) return;
+    const reordered = [...sortedCurricula];
+    const fromIdx = reordered.findIndex((l) => l.id === draggedId);
+    const toIdx = reordered.findIndex((l) => l.id === targetId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const [removed] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, removed);
+    await Promise.all(
+      reordered.map((l, i) => updateDoc(doc(db, "curriculums", l.id), { order: i }))
+    );
+  };
+
   const handleAddItem = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSaving(true);
     try {
       await addDoc(collection(db, "curriculums"), {
-        ...newItem, reward: Number(newItem.reward), createdAt: serverTimestamp(),
+        ...newItem,
+        reward: Number(newItem.reward),
+        order: curricula.length,
+        createdAt: serverTimestamp(),
       });
       setNewItem({ chapter: "", section: "", title: "", reward: 0 });
     } finally { setIsSaving(false); }
@@ -208,9 +236,9 @@ export default function AdminDashboard() {
     await deleteDoc(doc(db, "curriculums", id));
   };
 
-  // カリキュラムツリー（構成管理プレビュー用）
+  // カリキュラムツリー（sortedCurricula を使い order 順を維持）
   const curriculumTree: Record<string, Record<string, any[]>> = {};
-  curricula.forEach((item) => {
+  sortedCurricula.forEach((item) => {
     if (!curriculumTree[item.chapter]) curriculumTree[item.chapter] = {};
     if (!curriculumTree[item.chapter][item.section]) curriculumTree[item.chapter][item.section] = [];
     curriculumTree[item.chapter][item.section].push(item);
@@ -583,7 +611,7 @@ export default function AdminDashboard() {
                 {curricula.length === 0 && (
                   <p className="text-gray-400 text-sm text-center py-8">まだレッスンが登録されていません</p>
                 )}
-                {curricula.map((item) => (
+                {sortedCurricula.map((item) => (
                   <div key={item.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl">
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-bold text-orange-500 mb-0.5">{item.chapter} / {item.section}</p>
@@ -660,8 +688,28 @@ export default function AdminDashboard() {
                             <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">{section}</p>
                             <div className="space-y-1">
                               {(lessons as any[]).map((lesson, i) => (
-                                <div key={lesson.id} className="flex items-center justify-between py-2 px-3 rounded-xl hover:bg-gray-50 transition">
+                                <div
+                                  key={lesson.id}
+                                  draggable
+                                  onDragStart={() => setDraggingId(lesson.id)}
+                                  onDragEnd={() => { setDraggingId(null); setDragOverId(null); }}
+                                  onDragOver={(e) => { e.preventDefault(); setDragOverId(lesson.id); }}
+                                  onDragLeave={() => setDragOverId(null)}
+                                  onDrop={async (e) => {
+                                    e.preventDefault();
+                                    if (draggingId) await handleDropLesson(draggingId, lesson.id);
+                                    setDraggingId(null);
+                                    setDragOverId(null);
+                                  }}
+                                  className={`flex items-center justify-between py-2 px-3 rounded-xl transition select-none
+                                    ${draggingId === lesson.id ? "opacity-40" : ""}
+                                    ${dragOverId === lesson.id && draggingId !== lesson.id
+                                      ? "border-2 border-blue-400 bg-blue-50"
+                                      : "border-2 border-transparent hover:bg-gray-50"
+                                    }`}
+                                >
                                   <div className="flex items-center gap-3 min-w-0">
+                                    <span className="cursor-grab active:cursor-grabbing text-gray-300 text-lg shrink-0 leading-none">⠿</span>
                                     <span className="w-6 h-6 bg-gray-100 rounded-full flex items-center justify-center text-[10px] font-black text-gray-400 shrink-0">
                                       {i + 1}
                                     </span>

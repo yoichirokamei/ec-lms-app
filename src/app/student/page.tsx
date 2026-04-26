@@ -47,7 +47,13 @@ export default function StudentDashboard() {
 
           const q = query(collection(db, "curriculums"), orderBy("createdAt", "asc"));
           const snap = await getDocs(q);
-          const lessonData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() as any }));
+          const lessonData = snap.docs
+            .map(doc => ({ id: doc.id, ...doc.data() as any }))
+            .sort((a, b) => {
+              const ai = a.order !== undefined ? a.order : 0;
+              const bi = b.order !== undefined ? b.order : 0;
+              return ai - bi;
+            });
           setLessons(lessonData);
 
           const tree: any = {};
