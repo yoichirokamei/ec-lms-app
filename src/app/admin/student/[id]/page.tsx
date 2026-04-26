@@ -156,7 +156,7 @@ export default function StudentDetailPage({
 
           <div className="space-y-4">
             <div className="bg-gradient-to-br from-orange-400 to-orange-600 p-6 rounded-3xl text-white shadow-lg">
-              <p className="text-xs font-bold opacity-80 mb-1">獲得合計金額</p>
+              <p className="text-xs font-bold opacity-80 mb-1">獲得スキル評価額</p>
               <p className="text-3xl font-black">¥{earnedAmount.toLocaleString()}</p>
             </div>
             <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">

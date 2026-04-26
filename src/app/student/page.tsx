@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "../../lib/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
@@ -22,13 +22,21 @@ const getLevelData = (amount: number) => {
   return { lv: 0, name: "EC学習生", next: 5000 };
 };
 
+const toDateStr = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
 export default function StudentDashboard() {
   const [userData, setUserData] = useState<any>(null);
-  const [lessons, setLessons] = useState<any[]>([]);
+
   const [curriculumTree, setCurriculumTree] = useState<any>({});
   const [loading, setLoading] = useState(true);
   const [comment, setComment] = useState<{ [key: string]: string }>({});
   const [openChapters, setOpenChapters] = useState<{ [key: string]: boolean }>({});
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
+  const curriculumRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -37,12 +45,9 @@ export default function StudentDashboard() {
         try {
           const userRef = doc(db, "users", user.uid);
           const userSnap = await getDoc(userRef);
-          
+
           if (userSnap.exists()) {
-            const data = userSnap.data();
-            // 連続ログイン判定
-            const updatedData = checkLoginStreak(user.uid, data);
-            setUserData(updatedData);
+            setUserData({ ...userSnap.data(), uid: user.uid });
           }
 
           const q = query(collection(db, "curriculums"), orderBy("createdAt", "asc"));
@@ -54,8 +59,6 @@ export default function StudentDashboard() {
               const bi = b.order !== undefined ? b.order : 0;
               return ai - bi;
             });
-          setLessons(lessonData);
-
           const tree: any = {};
           const initialOpenState: { [key: string]: boolean } = {};
           lessonData.forEach(data => {
@@ -76,31 +79,10 @@ export default function StudentDashboard() {
     return () => unsubscribe();
   }, [router]);
 
-  const checkLoginStreak = (uid: string, data: any) => {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const lastLogin = data.lastLoginDate ? new Date(data.lastLoginDate).getTime() : 0;
-    const oneDay = 24 * 60 * 60 * 1000;
-
-    let newStreak = data.loginStreak || 0;
-
-    if (today === lastLogin) {
-    } else if (today === lastLogin + oneDay) {
-      newStreak += 1;
-    } else {
-      newStreak = 1;
-    }
-
-    const updated = { ...data, loginStreak: newStreak, lastLoginDate: today };
-    updateDoc(doc(db, "users", uid), { loginStreak: newStreak, lastLoginDate: today });
-    return updated;
-  };
-
   const levelInfo = getLevelData(userData?.earnedAmount || 0);
   const dateInfo = (() => {
     if (!userData?.startDate) return null;
     const start = new Date(userData.startDate);
-    // Firestore に保存済みの goalDate を優先、なければ startDate + 90日で計算
     const goalDate = userData.goalDate
       ? new Date(userData.goalDate)
       : (() => { const d = new Date(start); d.setDate(start.getDate() + 90); return d; })();
@@ -125,22 +107,64 @@ export default function StudentDashboard() {
       const newComments = userData.comments || {};
       newComments[lessonId] = { text: userComment, date: new Date().toISOString(), read: false };
 
-      await updateDoc(userRef, { earnedAmount: newAmount, progress: newProgress, comments: newComments, hasNewComment: true });
-      
+      const todayStr = toDateStr(new Date());
+      const newLearningDates = [...new Set([...(userData.learningDates || []), todayStr])];
+
+      await updateDoc(userRef, {
+        earnedAmount: newAmount,
+        progress: newProgress,
+        comments: newComments,
+        hasNewComment: true,
+        learningDates: newLearningDates,
+      });
+
       confetti({
         particleCount: 150,
         spread: 70,
         origin: { y: 0.6 },
-        colors: ["#f38118", "#0066ff", "#ffffff"]
+        colors: ["#f38118", "#0066ff", "#ffffff"],
       });
 
-      setUserData({ ...userData, earnedAmount: newAmount, progress: newProgress, comments: newComments });
+      setUserData({ ...userData, earnedAmount: newAmount, progress: newProgress, comments: newComments, learningDates: newLearningDates });
     } catch (err) { console.error(err); }
   };
 
   const toggleChapter = (chapter: string) => {
     setOpenChapters(prev => ({ ...prev, [chapter]: !prev[chapter] }));
   };
+
+  // --- Calendar helpers ---
+  const calendarYear = calendarMonth.getFullYear();
+  const calendarMonthIdx = calendarMonth.getMonth();
+
+  const getCalendarWeeks = () => {
+    const firstDay = new Date(calendarYear, calendarMonthIdx, 1);
+    const lastDay = new Date(calendarYear, calendarMonthIdx + 1, 0);
+    const startOffset = (firstDay.getDay() + 6) % 7; // Mon=0
+    const days: (number | null)[] = [];
+    for (let i = 0; i < startOffset; i++) days.push(null);
+    for (let d = 1; d <= lastDay.getDate(); d++) days.push(d);
+    while (days.length % 7 !== 0) days.push(null);
+    const weeks: (number | null)[][] = [];
+    for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7));
+    return weeks;
+  };
+
+  const isLearningDay = (day: number) => {
+    const dateStr = `${calendarYear}-${String(calendarMonthIdx + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    return (userData?.learningDates || []).includes(dateStr);
+  };
+
+  const isToday = (day: number) => {
+    const now = new Date();
+    return now.getFullYear() === calendarYear && now.getMonth() === calendarMonthIdx && now.getDate() === day;
+  };
+
+  const prevMonth = () => setCalendarMonth(new Date(calendarYear, calendarMonthIdx - 1, 1));
+  const nextMonth = () => setCalendarMonth(new Date(calendarYear, calendarMonthIdx + 1, 1));
+
+  const weeks = getCalendarWeeks();
+  const dayLabels = ["月", "火", "水", "木", "金", "土", "日"];
 
   if (loading) return <div className="p-8 text-center font-bold">読み込み中...</div>;
 
@@ -151,7 +175,7 @@ export default function StudentDashboard() {
           <div className="w-10 h-10 bg-[#f38118] rounded-lg flex items-center justify-center text-white font-black text-sm">EC</div>
           <span className="font-black text-xl tracking-tighter">ECでええじゃないか</span>
         </div>
-        <button onClick={() => signOut(auth)} className="text-sm font-bold text-gray-400">ログアウト</button>
+        <button type="button" onClick={() => signOut(auth)} className="text-sm font-bold text-gray-400">ログアウト</button>
       </header>
 
       <main className="max-w-6xl mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-10">
@@ -165,16 +189,74 @@ export default function StudentDashboard() {
             <p className="text-xs font-bold text-gray-400 mt-2">次レベルまで あと ¥{(levelInfo.next - userData.earnedAmount).toLocaleString()}</p>
           </div>
 
-          <div className="bg-white p-6 rounded-[30px] border-2 border-orange-100 text-center shadow-lg">
-            <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">現在の学習継続状況</p>
-            <p className="text-3xl font-black text-gray-900">{userData?.loginStreak || 0} 日目</p>
-            <p className="text-xs font-bold mt-2 text-[#f38118]">
-              {userData?.loginStreak > 1 ? `素晴らしい！${userData.loginStreak}日継続中！` : "毎日ログインして習慣化しよう！"}
+          {/* 学習のきろく カレンダー */}
+          <div className="bg-white p-6 rounded-[30px] border border-gray-100 shadow-lg">
+            <p className="text-base font-black text-gray-800 mb-5">🔥 学習のきろく</p>
+
+            {/* Month navigation */}
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-sm font-bold text-gray-700">
+                {calendarYear}年 {calendarMonthIdx + 1}月
+              </p>
+              <div className="flex gap-1">
+                <button type="button" onClick={prevMonth} className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 font-bold text-sm">‹</button>
+                <button type="button" onClick={nextMonth} className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 font-bold text-sm">›</button>
+              </div>
+            </div>
+
+            {/* Day headers */}
+            <div className="grid grid-cols-7 mb-1">
+              {dayLabels.map(label => (
+                <div key={label} className="text-center text-[11px] font-bold text-gray-400 py-1">{label}</div>
+              ))}
+            </div>
+
+            {/* Calendar grid */}
+            <div className="space-y-1">
+              {weeks.map((week, wi) => (
+                <div key={wi} className="grid grid-cols-7">
+                  {week.map((day, di) => (
+                    <div key={di} className="flex items-center justify-center py-0.5">
+                      {day === null ? (
+                        <div className="w-8 h-8" />
+                      ) : isLearningDay(day) ? (
+                        <div className="w-8 h-8 flex items-center justify-center text-lg leading-none">🔥</div>
+                      ) : isToday(day) ? (
+                        <div className="w-8 h-8 flex items-center justify-center rounded-full border-2 border-green-400 text-[11px] font-bold text-green-500">{day}</div>
+                      ) : (
+                        <div className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100" />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+
+            {/* Legend */}
+            <div className="flex items-center gap-4 mt-4">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-gray-600">
+                <span className="text-base">🔥</span> 学習した日
+              </div>
+              <div className="flex items-center gap-1.5 text-xs font-bold text-gray-600">
+                <div className="w-4 h-4 rounded-full bg-gray-100" /> おやすみした日
+              </div>
+            </div>
+            <p className="text-[10px] text-[#f38118] font-bold mt-2">
+              Tipsもしくはレッスンを1つ以上完了した日に🔥が付きます
             </p>
+
+            {/* CTA button */}
+            <button
+              type="button"
+              onClick={() => curriculumRef.current?.scrollIntoView({ behavior: "smooth" })}
+              className="mt-4 w-full py-4 bg-violet-500 hover:bg-violet-600 text-white rounded-[20px] font-black text-sm shadow-lg transition-all active:scale-95"
+            >
+              今日の学習を報告する
+            </button>
           </div>
 
           <div className="bg-gradient-to-br from-[#f38118] to-[#d66d0d] p-8 rounded-[40px] text-white shadow-xl">
-            <p className="text-xs font-bold opacity-80 mb-2 uppercase">現在の獲得合計金額</p>
+            <p className="text-xs font-bold opacity-80 mb-2 uppercase">獲得スキル評価額</p>
             <div className="text-5xl font-black tracking-tighter"><CountUp value={userData?.earnedAmount || 0} /></div>
           </div>
 
@@ -187,13 +269,13 @@ export default function StudentDashboard() {
           </div>
         </div>
 
-        <div className="lg:col-span-8 space-y-8">
+        <div ref={curriculumRef} className="lg:col-span-8 space-y-8">
           <h3 className="text-3xl font-black text-gray-900 tracking-tighter mb-10">学習カリキュラム</h3>
 
           {Object.keys(curriculumTree).map((chapter) => (
             <div key={chapter} className="space-y-6">
-              {/* 改修したアコーディオンヘッダー */}
-              <button 
+              <button
+                type="button"
                 onClick={() => toggleChapter(chapter)}
                 className="w-full flex items-center justify-between text-left group bg-white p-4 pr-6 rounded-2xl hover:bg-gray-50 transition-colors shadow-sm border border-gray-100"
               >
@@ -201,14 +283,13 @@ export default function StudentDashboard() {
                   <span className="w-2 h-8 bg-[#f38118] rounded-full mr-4 shadow-sm shadow-orange-100"></span>
                   {chapter}
                 </h4>
-                {/* 青丸のボタンデザイン */}
                 <div className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300 shadow-md ${openChapters[chapter] ? "bg-gray-400" : "bg-[#0066ff] group-hover:bg-blue-700 group-hover:scale-110"}`}>
                   <span className="text-white font-black text-xl leading-none">
                     {openChapters[chapter] ? "−" : "+"}
                   </span>
                 </div>
               </button>
-              
+
               {openChapters[chapter] && (
                 <div className="space-y-8 animate-in slide-in-from-top-4 duration-300 ml-2">
                   {Object.keys(curriculumTree[chapter]).map((section) => (
@@ -235,6 +316,7 @@ export default function StudentDashboard() {
                                     onChange={(e) => setComment({ ...comment, [task.id]: e.target.value })}
                                   />
                                   <button
+                                    type="button"
                                     onClick={() => handleComplete(task.id, task.reward)}
                                     className="w-full py-5 bg-[#0066ff] hover:bg-blue-700 text-white rounded-[25px] font-black text-sm shadow-xl transition-all active:scale-95"
                                   >
