@@ -94,10 +94,20 @@ export default function StudentDashboard() {
   const dateInfo = (() => {
     if (!userData?.startDate) return null;
     const start = new Date(userData.startDate);
-    const goalDate = new Date(start); goalDate.setMonth(start.getMonth() + 3);
-    const supportDate = new Date(goalDate); supportDate.setFullYear(goalDate.getFullYear() + 1);
+    // Firestore に保存済みの goalDate を優先、なければ startDate + 90日で計算
+    const goalDate = userData.goalDate
+      ? new Date(userData.goalDate)
+      : (() => { const d = new Date(start); d.setDate(start.getDate() + 90); return d; })();
+    const supportDate = userData.supportEndDate
+      ? new Date(userData.supportEndDate)
+      : (() => { const d = new Date(goalDate); d.setFullYear(goalDate.getFullYear() + 1); return d; })();
     const diff = Math.ceil((goalDate.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
-    return { start: userData.startDate, goal: goalDate.toLocaleDateString(), support: supportDate.toLocaleDateString(), remaining: diff > 0 ? diff : 0 };
+    return {
+      start: userData.startDate,
+      goal: goalDate.toLocaleDateString("ja-JP"),
+      support: supportDate.toLocaleDateString("ja-JP"),
+      remaining: diff > 0 ? diff : 0,
+    };
   })();
 
   const handleComplete = async (lessonId: string, reward: number) => {
